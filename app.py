@@ -24,16 +24,47 @@ TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 def extraer_numero_telefono(texto):
     """
     Busca un número de teléfono en el texto del cliente.
-    Esta regex busca formatos comunes: 1234567890, 123-456-7890, +52 123 456 7890, etc.
+    Soporta múltiples formatos latinoamericanos.
     """
+    import re
     
-    patron = r'\+?\d[\d\s\-\(\)]{8,}\d'
-    match = re.search(patron, texto)
+    # Limpiar el texto (remover caracteres extraños)
+    texto = texto.strip()
     
-    if match:
-        # Limpiamos el número (quitamos espacios, guiones, etc.)
-        numero_limpio = re.sub(r'[\s\-\(\)]', '', match.group())
-        return numero_limpio
+    # Patrones de búsqueda (del más específico al más general)
+    patrones = [
+        # Formato con código de país: +57 310 552 3667
+        r'\+\d{1,3}[\s\-]?\d{3}[\s\-]?\d{3}[\s\-]?\d{4}',
+        
+        # Formato con paréntesis: (310) 552-3667
+        r'\(\d{3}\)[\s\-]?\d{3}[\s\-]?\d{4}',
+        
+        # Formato con guiones: 310-552-3667
+        r'\d{3}[\s\-]\d{3}[\s\-]\d{4}',
+        
+        # Formato con espacios: 310 552 3667
+        r'\d{3}[\s]\d{3}[\s]\d{4}',
+        
+        # Formato continuo (10 dígitos): 3105523667
+        r'\d{10,15}',
+        
+        # Formato con código de país sin más: 573105523667
+        r'\d{11,15}',
+    ]
+    
+    for patron in patrones:
+        match = re.search(patron, texto)
+        if match:
+            numero_raw = match.group()
+            # Limpiar el número (solo dígitos)
+            numero_limpio = re.sub(r'\D', '', numero_raw)
+            
+            # Validar que sea un número razonable (entre 7 y 15 dígitos)
+            if 7 <= len(numero_limpio) <= 15:
+                print(f"[DEBUG] Número encontrado: {numero_raw} -> {numero_limpio}")
+                return numero_limpio
+    
+    print(f"[DEBUG] No se encontró número en: {texto}")
     return None
 
 def guardar_en_excel(numero, nombre_usuario):
