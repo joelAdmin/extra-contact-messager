@@ -11,6 +11,10 @@ load_dotenv()
 
 app = Flask(__name__)
 
+# Diccionario para rastrear usuarios que ya recibieron respuesta
+# {sender_id: bool} - True si ya se respondió
+usuarios_respondidos = {}
+
 # --- CONFIGURACIÓN ---
 FACEBOOK_TOKEN = os.getenv('FACEBOOK_PAGE_ACCESS_TOKEN')
 VERIFY_TOKEN = os.getenv('VERIFY_TOKEN')
