@@ -163,6 +163,8 @@ def verificar_webhook():
 @app.route('/webhook', methods=['POST'])
 def recibir_mensajes():
     """Recibe los mensajes que los usuarios envian a tu pagina."""
+    global usuarios_respondidos
+    
     data = request.get_json()
     
     # Verificamos que la data tenga la estructura esperada
@@ -174,30 +176,38 @@ def recibir_mensajes():
                     continue
                     
                 sender_id = messaging_event['sender']['id']
+                
                 # Si el evento contiene un mensaje de texto
                 if messaging_event.get('message') and messaging_event['message'].get('text'):
                     mensaje_texto = messaging_event['message']['text']
                     
-                    # --- LOGICA PRINCIPAL ---
-                    # 1. Responder al cliente inmediatamente
-                    responder_a_cliente(sender_id, "¡Graciass por contactarnos! En breve recibirás tu cotización. Por favor comparte tu número telefónico si aún no lo has hecho.")
+                    # --- LOGICA PRINCIPAL MODIFICADA ---
                     
-                    # 2. Extraer el numero de telefono del mensaje
+                    # 1. Extraer el numero de telefono del mensaje
                     numero_encontrado = extraer_numero_telefono(mensaje_texto)
                     
                     if numero_encontrado:
-                        # 3. Guardar en el Excel
+                        # SI HAY NÚMERO: Guardar y responder confirmación
                         guardar_en_txt(numero_encontrado, sender_id)
                         
-                        # 4. Enviar alerta a ti (WhatsApp o Telegram)
-                        if MI_NUMERO_WHATSAPP:
-                            enviar_alerta_whatsapp(numero_encontrado)
-                        elif TELEGRAM_BOT_TOKEN and MI_ID_TELEGRAM:
-                            enviar_alerta_telegram(numero_encontrado)
-                        else:
-                            print("[!] No configuraste un destino de alerta (WhatsApp/Telegram)")
+                        # Responder que ya tenemos su número
+                        responder_a_cliente(sender_id, f"✅ ¡Gracias! Hemos recibido tu número {numero_encontrado}. En breve nos pondremos en contacto contigo.")
+                        
+                        # Marcar como respondido
+                        usuarios_respondidos[sender_id] = True
+                        
+                        print(f"[+] Lead procesado: {sender_id} - {numero_encontrado}")
+                        
                     else:
-                        print(f"No se encontró un número en: {mensaje_texto}")
+                        # NO HAY NÚMERO: Verificar si ya se respondió antes
+                        if sender_id not in usuarios_respondidos or not usuarios_respondidos[sender_id]:
+                            # Solo responder si NO se ha respondido antes
+                            responder_a_cliente(sender_id, "¡Gracias por contactarnos! Por favor comparte tu número telefónico para poder ayudarte mejor.")
+                            usuarios_respondidos[sender_id] = True  # Ya respondió, no volverá a responder
+                            print(f"[!] Se pidió el número a: {sender_id}")
+                        else:
+                            # Ya se respondió antes, no hacer nada
+                            print(f"[!] Usuario {sender_id} ya recibió respuesta, ignorando mensaje sin número: {mensaje_texto[:30]}...")
                     # -----------------------
                     
     return "OK", 200
