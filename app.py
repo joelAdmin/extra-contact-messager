@@ -5,6 +5,7 @@ import requests
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
+
 # Cargar variables de entorno (para no hardcodear tokens)
 load_dotenv()
 
@@ -25,8 +26,10 @@ def extraer_numero_telefono(texto):
     Busca un número de teléfono en el texto del cliente.
     Esta regex busca formatos comunes: 1234567890, 123-456-7890, +52 123 456 7890, etc.
     """
+    
     patron = r'\+?\d[\d\s\-\(\)]{8,}\d'
     match = re.search(patron, texto)
+    
     if match:
         # Limpiamos el número (quitamos espacios, guiones, etc.)
         numero_limpio = re.sub(r'[\s\-\(\)]', '', match.group())
@@ -53,6 +56,21 @@ def guardar_en_excel(numero, nombre_usuario):
     # Guardamos el archivo
     df.to_excel(archivo_excel, index=False)
     print(f"[+] Contacto guardado: {numero}")
+
+def guardar_en_txt(numero, nombre_usuario):
+    """Guarda el contacto en un archivo TXT con timestamp."""
+    archivo_txt = 'contactos.txt'
+    
+    # Crear la línea con los datos
+    linea = f"{pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')} | ID: {nombre_usuario} | Número: {numero}\n"
+    
+    try:
+        # Abrir el archivo en modo append (agregar al final)
+        with open(archivo_txt, 'a', encoding='utf-8') as archivo:
+            archivo.write(linea)
+        print(f"[+] Contacto guardado en TXT: {numero}")
+    except Exception as e:
+        print(f"[!] Error guardando contacto: {e}")
 
 def enviar_alerta_whatsapp(numero_cliente):
     """Envía una notificación a tu WhatsApp Business."""
@@ -131,14 +149,14 @@ def recibir_mensajes():
                     
                     # --- LOGICA PRINCIPAL ---
                     # 1. Responder al cliente inmediatamente
-                    responder_a_cliente(sender_id, "¡Gracias por contactarnos! En breve recibirás tu cotización. Por favor comparte tu número telefónico si aún no lo has hecho.")
+                    responder_a_cliente(sender_id, "¡Graciass por contactarnos! En breve recibirás tu cotización. Por favor comparte tu número telefónico si aún no lo has hecho.")
                     
                     # 2. Extraer el numero de telefono del mensaje
                     numero_encontrado = extraer_numero_telefono(mensaje_texto)
                     
                     if numero_encontrado:
                         # 3. Guardar en el Excel
-                        guardar_en_excel(numero_encontrado, sender_id)
+                        guardar_en_txt(numero_encontrado, sender_id)
                         
                         # 4. Enviar alerta a ti (WhatsApp o Telegram)
                         if MI_NUMERO_WHATSAPP:

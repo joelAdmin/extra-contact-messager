@@ -1,4 +1,23 @@
+# Entornos virtuales
+venv/
+.venv/
 .env
 .env.backup
 .env.production
 .env.prod
+
+# Archivos de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDs de editores
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
