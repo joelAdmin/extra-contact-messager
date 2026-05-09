@@ -1,4 +1,5 @@
 import os
+import json
 import re
 import pandas as pd
 import requests
@@ -22,7 +23,42 @@ VERIFY_TOKEN = os.getenv('VERIFY_TOKEN')
 MI_NUMERO_WHATSAPP = os.getenv('MI_NUMERO_WHATSAPP') # Ej: 521234567890
 MI_ID_TELEGRAM = os.getenv('MI_ID_TELEGRAM') # Tu chat ID de Telegram
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+ARCHIVO_RESPONDIDOS = os.getenv('ARCHIVO_RESPONDIDOS')
 # --------------------
+
+# Función para cargar la lista de usuarios respondidos desde un archivo JSON
+def cargar_respondidos():
+    """Carga la lista de usuarios que ya recibieron respuesta.
+    Si el archivo no existe, lo crea vacío."""
+    if os.path.exists(ARCHIVO_RESPONDIDOS):
+        try:
+            with open(ARCHIVO_RESPONDIDOS, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            # Si el archivo está corrupto o hay error, crear uno nuevo
+            print("[!] Archivo de usuarios corrupto, creando uno nuevo")
+            return {}
+    else:
+        # El archivo no existe, crearlo vacío
+        print("[*] Creando archivo usuarios_respondidos.json")
+        with open(ARCHIVO_RESPONDIDOS, 'w', encoding='utf-8') as f:
+            json.dump({}, f)
+        return {}
+
+# Función para guardar la lista de usuarios respondidos en un archivo JSON
+def guardar_respondidos(respondidos):
+    """Guarda la lista de usuarios que ya recibieron respuesta."""
+    try:
+        with open(ARCHIVO_RESPONDIDOS, 'w', encoding='utf-8') as f:
+            json.dump(respondidos, f, indent=2, ensure_ascii=False)
+        print(f"[*] Estado guardado: {len(respondidos)} usuarios respondidos")
+        return True
+    except Exception as e:
+        print(f"[!] Error guardando usuarios_respondidos: {e}")
+        return False
+    
+usuarios_respondidos = cargar_respondidos()
+print(f"[*] Cargados {len(usuarios_respondidos)} usuarios que ya respondieron")
 
 # --- 1. FUNCIONES PARA EXTRAER Y GUARDAR ---
 def extraer_numero_telefono(texto):
@@ -199,6 +235,7 @@ def recibir_mensajes():
                         
                         # Marcar como respondido
                         usuarios_respondidos[sender_id] = True
+                        guardar_respondidos(usuarios_respondidos)  # Guardar inmediatamente
                         
                         print(f"[+] Lead procesado: {sender_id} - {numero_encontrado}")
                         
@@ -208,6 +245,7 @@ def recibir_mensajes():
                             # Solo responder si NO se ha respondido antes
                             responder_a_cliente(sender_id, "¡Gracias por contactarnos! Por favor comparte tu número telefónico para poder ayudarte mejor.")
                             usuarios_respondidos[sender_id] = True  # Ya respondió, no volverá a responder
+                            guardar_respondidos(usuarios_respondidos)  # Guardar
                             print(f"[!] Se pidió el número a: {sender_id}")
                         else:
                             # Ya se respondió antes, no hacer nada
