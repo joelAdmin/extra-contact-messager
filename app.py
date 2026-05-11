@@ -239,6 +239,7 @@ def recibir_mensajes():
                         
                         # Responder que ya tenemos su número
                         responder_a_cliente(sender_id, f"✅ ¡Gracias! Hemos recibido tu número {numero_encontrado}. En breve nos pondremos en contacto contigo.")
+                        print(f"[+] Número extraído y guardado: {numero_encontrado} de usuario {sender_id}")
                         
                         # Marcar como respondido
                         usuarios_respondidos[sender_id] = True
