@@ -230,6 +230,10 @@ def recibir_mensajes():
                         # SI HAY NÚMERO: Guardar y responder confirmación
                         guardar_en_txt(numero_encontrado, sender_id)
                         
+                        # Enviar alerta a WhatsApp y Telegram
+                        #enviar_alerta_whatsapp(numero_encontrado)
+                        enviar_alerta_telegram(numero_encontrado)
+                        
                         # Responder que ya tenemos su número
                         responder_a_cliente(sender_id, f"✅ ¡Gracias! Hemos recibido tu número {numero_encontrado}. En breve nos pondremos en contacto contigo.")
                         
