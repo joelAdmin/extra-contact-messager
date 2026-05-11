@@ -165,13 +165,16 @@ def enviar_alerta_whatsapp(numero_cliente):
 def enviar_alerta_telegram(numero_cliente):
     """Envía una notificación a tu Telegram."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    print(f"[*] Enviando alerta a Telegram: {numero_cliente}")
     data = {
         "chat_id": MI_ID_TELEGRAM,
         "text": f"📢 *Nuevo lead de Messenger!*\n📞 Número: `{numero_cliente}`",
         "parse_mode": "Markdown"
     }
+    print(f"[*] Payload Telegram: {data}")
     try:
         requests.post(url, json=data)
+        print(f"[*] Alerta enviada a Telegram para número: {numero_cliente}")
     except Exception as e:
         print(f"Error enviando a Telegram: {e}")
 
