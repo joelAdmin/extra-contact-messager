@@ -164,6 +164,10 @@ def enviar_alerta_whatsapp(numero_cliente):
 
 def enviar_alerta_telegram(numero_cliente):
     """Envía una notificación a tu Telegram."""
+    if not TELEGRAM_BOT_TOKEN or not MI_ID_TELEGRAM:
+        print("[!] Telegram no está configurado. Verifica TELEGRAM_BOT_TOKEN y MI_ID_TELEGRAM en .env")
+        return False
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     print(f"[*] Enviando alerta a Telegram: {numero_cliente}")
     data = {
@@ -173,10 +177,17 @@ def enviar_alerta_telegram(numero_cliente):
     }
     print(f"[*] Payload Telegram: {data}")
     try:
-        requests.post(url, json=data)
-        print(f"[*] Alerta enviada a Telegram para número: {numero_cliente}")
+        response = requests.post(url, json=data, timeout=10)
+        if response.ok:
+            print(f"[*] Alerta enviada a Telegram para número: {numero_cliente}")
+            return True
+        else:
+            print(f"[!] Error en Telegram {response.status_code}: {response.text}")
+            return False
     except Exception as e:
         print(f"Error enviando a Telegram: {e}")
+        return False
+
 
 def responder_a_cliente(recipient_id, mensaje):
     """Envía un mensaje de vuelta al usuario en Messenger."""
@@ -268,6 +279,8 @@ if __name__ == '__main__':
         print("⚠️ ERROR: Configura FACEBOOK_PAGE_ACCESS_TOKEN en un archivo .env")
     if not VERIFY_TOKEN:
         print("⚠️ ERROR: Configura VERIFY_TOKEN en un archivo .env")
+    if not TELEGRAM_BOT_TOKEN or not MI_ID_TELEGRAM:
+        print("⚠️ WARN: Telegram no está configurado o falta MI_ID_TELEGRAM / TELEGRAM_BOT_TOKEN")
     
     print("🤖 Bot de Messenger iniciado...")
     app.run(port=5000, debug=True)
