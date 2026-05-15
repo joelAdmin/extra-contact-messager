@@ -1,3 +1,5 @@
+from typing import Optional
+
 import requests
 
 
@@ -5,8 +7,8 @@ class NotificationService:
 
     def __init__(
         self,
-        telegram_bot_token: str | None = None,
-        telegram_chat_id: str | None = None,
+        telegram_bot_token: Optional[str] = None,
+        telegram_chat_id: Optional[str] = None,
     ):
         self.telegram_bot_token = telegram_bot_token
         self.telegram_chat_id = telegram_chat_id

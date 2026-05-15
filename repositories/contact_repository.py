@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import List, Optional
 
 from models.contact import Contact
 
@@ -12,13 +13,13 @@ class ContactRepository(ABC):
     @abstractmethod
     def find_by_sender(
         self, client_id: str, sender_id: str
-    ) -> Contact | None:
+    ) -> Optional[Contact]:
         ...
 
     @abstractmethod
     def list_by_client(
         self, client_id: str, limit: int = 50
-    ) -> list[Contact]:
+    ) -> List[Contact]:
         ...
 
 
@@ -35,7 +36,7 @@ class MongoContactRepository(ContactRepository):
 
     def find_by_sender(
         self, client_id: str, sender_id: str
-    ) -> Contact | None:
+    ) -> Optional[Contact]:
         doc = self.collection.find_one(
             {"client_id": client_id, "sender_id": sender_id}
         )
@@ -43,7 +44,7 @@ class MongoContactRepository(ContactRepository):
 
     def list_by_client(
         self, client_id: str, limit: int = 50
-    ) -> list[Contact]:
+    ) -> List[Contact]:
         docs = (
             self.collection.find({"client_id": client_id})
             .sort("fecha_captura", -1)
