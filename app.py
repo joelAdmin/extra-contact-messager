@@ -1,286 +1,178 @@
 import os
-import json
 import re
-import pandas as pd
-import requests
-from flask import Flask, request, jsonify
-from dotenv import load_dotenv
 
+from flask import Flask, request
 
-# Cargar variables de entorno (para no hardcodear tokens)
-load_dotenv()
+import config
+from models.client import Client
+from models.contact import Contact
+from services.messenger import MessengerService
+from services.notifications import NotificationService
+
+config.load_environment()
+
+DB_TYPE = os.getenv("DB_TYPE", "mongo")
+
+if DB_TYPE == "mongo":
+    db = config.get_database()
+    from repositories.client_repository import MongoClientRepository
+    from repositories.contact_repository import MongoContactRepository
+    from repositories.user_repository import MongoUserRepository
+
+    client_repo = MongoClientRepository(db)
+    contact_repo = MongoContactRepository(db)
+    user_repo = MongoUserRepository(db)
+
+    default_client = Client(
+        client_id=os.getenv("CLIENT_ID", "default"),
+        email=os.getenv("EMAIL"),
+        facebook_config={
+            "page_access_token": os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN"),
+            "verify_token": os.getenv("VERIFY_TOKEN"),
+            "page_id": os.getenv("PAGE_ID", ""),
+            "phone_number_id": os.getenv("PHONE_NUMBER_ID", ""),
+        },
+        telegram_config=(
+            {
+                "bot_token": os.getenv("TELEGRAM_BOT_TOKEN"),
+                "chat_id": os.getenv("MI_ID_TELEGRAM"),
+            }
+            if os.getenv("TELEGRAM_BOT_TOKEN")
+            else None
+        ),
+        activo=True,
+        plan=os.getenv("PLAN", "free"),
+    )
+    client_repo.upsert(default_client)
+else:
+    raise ValueError(f"Unsupported DB_TYPE: {DB_TYPE}. Available: mongo")
 
 app = Flask(__name__)
 
-# Diccionario para rastrear usuarios que ya recibieron respuesta
-# {sender_id: bool} - True si ya se respondió
-usuarios_respondidos = {}
 
-# --- CONFIGURACIÓN ---
-FACEBOOK_TOKEN = os.getenv('FACEBOOK_PAGE_ACCESS_TOKEN')
-VERIFY_TOKEN = os.getenv('VERIFY_TOKEN')
-# Configura aquí a dónde quieres recibir la alerta
-MI_NUMERO_WHATSAPP = os.getenv('MI_NUMERO_WHATSAPP') # Ej: 521234567890
-MI_ID_TELEGRAM = os.getenv('MI_ID_TELEGRAM') # Tu chat ID de Telegram
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-ARCHIVO_RESPONDIDOS = os.getenv('ARCHIVO_RESPONDIDOS')
-# --------------------
-
-# Función para cargar la lista de usuarios respondidos desde un archivo JSON
-def cargar_respondidos():
-    """Carga la lista de usuarios que ya recibieron respuesta.
-    Si el archivo no existe, lo crea vacío."""
-    if os.path.exists(ARCHIVO_RESPONDIDOS):
-        try:
-            with open(ARCHIVO_RESPONDIDOS, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
-            # Si el archivo está corrupto o hay error, crear uno nuevo
-            print("[!] Archivo de usuarios corrupto, creando uno nuevo")
-            return {}
-    else:
-        # El archivo no existe, crearlo vacío
-        print("[*] Creando archivo usuarios_respondidos.json")
-        with open(ARCHIVO_RESPONDIDOS, 'w', encoding='utf-8') as f:
-            json.dump({}, f)
-        return {}
-
-# Función para guardar la lista de usuarios respondidos en un archivo JSON
-def guardar_respondidos(respondidos):
-    """Guarda la lista de usuarios que ya recibieron respuesta."""
-    try:
-        with open(ARCHIVO_RESPONDIDOS, 'w', encoding='utf-8') as f:
-            json.dump(respondidos, f, indent=2, ensure_ascii=False)
-        print(f"[*] Estado guardado: {len(respondidos)} usuarios respondidos")
-        return True
-    except Exception as e:
-        print(f"[!] Error guardando usuarios_respondidos: {e}")
-        return False
-    
-usuarios_respondidos = cargar_respondidos()
-print(f"[*] Cargados {len(usuarios_respondidos)} usuarios que ya respondieron")
-
-# --- 1. FUNCIONES PARA EXTRAER Y GUARDAR ---
 def extraer_numero_telefono(texto):
-    """
-    Busca un número de teléfono en el texto del cliente.
-    Soporta múltiples formatos latinoamericanos.
-    """
-    import re
-    
-    # Limpiar el texto (remover caracteres extraños)
     texto = texto.strip()
-    
-    # Patrones de búsqueda (del más específico al más general)
+
     patrones = [
-        # Formato con código de país: +57 310 552 3667
-        r'\+\d{1,3}[\s\-]?\d{3}[\s\-]?\d{3}[\s\-]?\d{4}',
-        
-        # Formato con paréntesis: (310) 552-3667
-        r'\(\d{3}\)[\s\-]?\d{3}[\s\-]?\d{4}',
-        
-        # Formato con guiones: 310-552-3667
-        r'\d{3}[\s\-]\d{3}[\s\-]\d{4}',
-        
-        # Formato con espacios: 310 552 3667
-        r'\d{3}[\s]\d{3}[\s]\d{4}',
-        
-        # Formato continuo (10 dígitos): 3105523667
-        r'\d{10,15}',
-        
-        # Formato con código de país sin más: 573105523667
-        r'\d{11,15}',
+        r"\+\d{1,3}[\s\-]?\d{3}[\s\-]?\d{3}[\s\-]?\d{4}",
+        r"\(\d{3}\)[\s\-]?\d{3}[\s\-]?\d{4}",
+        r"\d{3}[\s\-]\d{3}[\s\-]\d{4}",
+        r"\d{3}[\s]\d{3}[\s]\d{4}",
+        r"\d{10,15}",
+        r"\d{11,15}",
     ]
-    
+
     for patron in patrones:
         match = re.search(patron, texto)
         if match:
             numero_raw = match.group()
-            # Limpiar el número (solo dígitos)
-            numero_limpio = re.sub(r'\D', '', numero_raw)
-            
-            # Validar que sea un número razonable (entre 7 y 15 dígitos)
+            numero_limpio = re.sub(r"\D", "", numero_raw)
             if 7 <= len(numero_limpio) <= 15:
-                print(f"[DEBUG] Número encontrado: {numero_raw} -> {numero_limpio}")
+                print(f"[DEBUG] Number found: {numero_raw} -> {numero_limpio}")
                 return numero_limpio
-    
-    print(f"[DEBUG] No se encontró número en: {texto}")
+
+    print(f"[DEBUG] No number found in: {texto[:50]}")
     return None
 
-def guardar_en_excel(numero, nombre_usuario):
-    """Guarda el contacto en un archivo Excel con timestamp."""
-    archivo_excel = 'contactos.xlsx'
-    nueva_fila = {
-        'Fecha': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'ID_Usuario': nombre_usuario,
-        'Numero_Contacto': numero
-    }
-    
-    try:
-        # Intentamos leer el archivo existente
-        df = pd.read_excel(archivo_excel)
-        df = pd.concat([df, pd.DataFrame([nueva_fila])], ignore_index=True)
-    except FileNotFoundError:
-        # Si no existe, creamos uno nuevo
-        df = pd.DataFrame([nueva_fila])
-    
-    # Guardamos el archivo
-    df.to_excel(archivo_excel, index=False)
-    print(f"[+] Contacto guardado: {numero}")
 
-def guardar_en_txt(numero, nombre_usuario):
-    """Guarda el contacto en un archivo TXT con timestamp."""
-    archivo_txt = 'contactos.txt'
-    
-    # Crear la línea con los datos
-    linea = f"{pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')} | ID: {nombre_usuario} | Número: {numero}\n"
-    
-    try:
-        # Abrir el archivo en modo append (agregar al final)
-        with open(archivo_txt, 'a', encoding='utf-8') as archivo:
-            archivo.write(linea)
-        print(f"[+] Contacto guardado en TXT: {numero}")
-    except Exception as e:
-        print(f"[!] Error guardando contacto: {e}")
-
-def enviar_alerta_whatsapp(numero_cliente):
-    """Envía una notificación a tu WhatsApp Business."""
-    # Usando la API Cloud de WhatsApp Business
-    url = f"https://graph.facebook.com/v18.0/{os.getenv('PHONE_NUMBER_ID')}/messages"
-    headers = {
-        "Authorization": f"Bearer {FACEBOOK_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    data = {
-        "messaging_product": "whatsapp",
-        "to": MI_NUMERO_WHATSAPP,
-        "type": "text",
-        "text": { "body": f"📢 Nuevo lead de Messenger!\nNúmero: {numero_cliente}" }
-    }
-    try:
-        requests.post(url, headers=headers, json=data)
-    except Exception as e:
-        print(f"Error enviando a WhatsApp: {e}")
-
-def enviar_alerta_telegram(numero_cliente):
-    """Envía una notificación a tu Telegram."""
-    if not TELEGRAM_BOT_TOKEN or not MI_ID_TELEGRAM:
-        print("[!] Telegram no está configurado. Verifica TELEGRAM_BOT_TOKEN y MI_ID_TELEGRAM en .env")
-        return False
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    print(f"[*] Enviando alerta a Telegram: {numero_cliente}")
-    data = {
-        "chat_id": MI_ID_TELEGRAM,
-        "text": f"📢 *Nuevo lead de Messenger!*\n📞 Número: `{numero_cliente}`",
-        "parse_mode": "Markdown"
-    }
-    print(f"[*] Payload Telegram: {data}")
-    try:
-        response = requests.post(url, json=data, timeout=10)
-        if response.ok:
-            print(f"[*] Alerta enviada a Telegram para número: {numero_cliente}")
-            return True
-        else:
-            print(f"[!] Error en Telegram {response.status_code}: {response.text}")
-            return False
-    except Exception as e:
-        print(f"Error enviando a Telegram: {e}")
-        return False
-
-
-def responder_a_cliente(recipient_id, mensaje):
-    """Envía un mensaje de vuelta al usuario en Messenger."""
-    url = f"https://graph.facebook.com/v18.0/me/messages?access_token={FACEBOOK_TOKEN}"
-    data = {
-        "recipient": {"id": recipient_id},
-        "messaging_type": "RESPONSE",
-        "message": {"text": mensaje}
-    }
-    response = requests.post(url, json=data)
-    return response.json()
-
-# --- 2. ENDPOINTS DEL SERVIDOR ---
-@app.route('/webhook', methods=['GET'])
+@app.route("/webhook", methods=["GET"])
 def verificar_webhook():
-    """Facebook llama a este GET para verificar el webhook."""
-    mode = request.args.get('hub.mode')
-    token = request.args.get('hub.verify_token')
-    challenge = request.args.get('hub.challenge')
-    
-    if mode and token and mode == 'subscribe' and token == VERIFY_TOKEN:
-        print("[✓] Webhook verificado correctamente.")
-        return challenge, 200
-    else:
-        return "Error de verificacion", 403
+    mode = request.args.get("hub.mode")
+    token = request.args.get("hub.verify_token")
+    challenge = request.args.get("hub.challenge")
 
-@app.route('/webhook', methods=['POST'])
+    client = client_repo.find_by_verify_token(token)
+    if client and mode == "subscribe":
+        print(f"[✓] Webhook verified for client {client.client_id}")
+        return challenge, 200
+
+    return "Verification failed", 403
+
+
+@app.route("/webhook", methods=["POST"])
 def recibir_mensajes():
-    """Recibe los mensajes que los usuarios envian a tu pagina."""
-    global usuarios_respondidos
-    
     data = request.get_json()
-    
-    # Verificamos que la data tenga la estructura esperada
-    if data['object'] == 'page':
-        for entry in data['entry']:
-            for messaging_event in entry.get('messaging', []):
-                # Ignoramos mensajes enviados por la pagina misma (el bot)
-                if messaging_event.get('sender', {}).get('id') == messaging_event.get('recipient', {}).get('id'):
-                    continue
-                    
-                sender_id = messaging_event['sender']['id']
-                
-                # Si el evento contiene un mensaje de texto
-                if messaging_event.get('message') and messaging_event['message'].get('text'):
-                    mensaje_texto = messaging_event['message']['text']
-                    
-                    # --- LOGICA PRINCIPAL MODIFICADA ---
-                    
-                    # 1. Extraer el numero de telefono del mensaje
-                    numero_encontrado = extraer_numero_telefono(mensaje_texto)
-                    
-                    if numero_encontrado:
-                        # SI HAY NÚMERO: Guardar y responder confirmación
-                        guardar_en_txt(numero_encontrado, sender_id)
-                        
-                        # Enviar alerta a WhatsApp y Telegram
-                        #enviar_alerta_whatsapp(numero_encontrado)
-                        enviar_alerta_telegram(numero_encontrado)
-                        
-                        # Responder que ya tenemos su número
-                        responder_a_cliente(sender_id, f"✅ ¡Gracias! Hemos recibido tu número {numero_encontrado}. En breve nos pondremos en contacto contigo.")
-                        print(f"[+] Número extraído y guardado: {numero_encontrado} de usuario {sender_id}")
-                        
-                        # Marcar como respondido
-                        usuarios_respondidos[sender_id] = True
-                        guardar_respondidos(usuarios_respondidos)  # Guardar inmediatamente
-                        
-                        print(f"[+] Lead procesado: {sender_id} - {numero_encontrado}")
-                        
-                    else:
-                        # NO HAY NÚMERO: Verificar si ya se respondió antes
-                        if sender_id not in usuarios_respondidos or not usuarios_respondidos[sender_id]:
-                            # Solo responder si NO se ha respondido antes
-                            responder_a_cliente(sender_id, "¡Gracias por contactarnos! Por favor comparte tu número telefónico para poder ayudarte mejor.")
-                            usuarios_respondidos[sender_id] = True  # Ya respondió, no volverá a responder
-                            guardar_respondidos(usuarios_respondidos)  # Guardar
-                            print(f"[!] Se pidió el número a: {sender_id}")
-                        else:
-                            # Ya se respondió antes, no hacer nada
-                            print(f"[!] Usuario {sender_id} ya recibió respuesta, ignorando mensaje sin número: {mensaje_texto[:30]}...")
-                    # -----------------------
-                    
+
+    if data.get("object") != "page":
+        return "OK", 200
+
+    for entry in data.get("entry", []):
+        page_id = entry.get("id")
+        client = client_repo.find_by_page_id(page_id)
+
+        if not client:
+            print(f"[!] No client found for page_id: {page_id}")
+            continue
+
+        messenger = MessengerService(
+            client.facebook_config.get("page_access_token")
+        )
+        notifier = NotificationService(
+            telegram_bot_token=(
+                client.telegram_config.get("bot_token")
+                if client.telegram_config
+                else None
+            ),
+            telegram_chat_id=(
+                client.telegram_config.get("chat_id")
+                if client.telegram_config
+                else None
+            ),
+        )
+
+        for messaging_event in entry.get("messaging", []):
+            sender_id = messaging_event.get("sender", {}).get("id")
+            recipient_id = messaging_event.get("recipient", {}).get("id")
+
+            if sender_id == recipient_id:
+                continue
+
+            message = messaging_event.get("message", {})
+            if not message.get("text"):
+                continue
+
+            mensaje_texto = message["text"]
+            numero = extraer_numero_telefono(mensaje_texto)
+
+            if numero:
+                contact = Contact(
+                    client_id=client.client_id,
+                    sender_id=sender_id,
+                    numero_telefono=numero,
+                )
+                contact_repo.save(contact)
+                user_repo.mark_responded(client.client_id, sender_id)
+                notifier.send_telegram_alert(numero, sender_id)
+                messenger.send_message(
+                    sender_id,
+                    f"✅ ¡Gracias! Hemos recibido tu número {numero}. "
+                    f"En breve nos pondremos en contacto contigo.",
+                )
+                print(f"[+] Lead saved: {sender_id} - {numero}")
+            else:
+                if not user_repo.is_responded(
+                    client.client_id, sender_id
+                ):
+                    messenger.send_message(
+                        sender_id,
+                        "¡Gracias por contactarnos! Por favor comparte "
+                        "tu número telefónico para poder ayudarte mejor.",
+                    )
+                    user_repo.mark_responded(client.client_id, sender_id)
+                    print(f"[!] Asked for number from: {sender_id}")
+                else:
+                    print(
+                        f"[!] User {sender_id} already responded, ignoring"
+                    )
+
     return "OK", 200
 
-if __name__ == '__main__':
-    # Cargar variables de entorno o pedirlas si no existen
-    if not FACEBOOK_TOKEN:
-        print("⚠️ ERROR: Configura FACEBOOK_PAGE_ACCESS_TOKEN en un archivo .env")
-    if not VERIFY_TOKEN:
-        print("⚠️ ERROR: Configura VERIFY_TOKEN en un archivo .env")
-    if not TELEGRAM_BOT_TOKEN or not MI_ID_TELEGRAM:
-        print("⚠️ WARN: Telegram no está configurado o falta MI_ID_TELEGRAM / TELEGRAM_BOT_TOKEN")
-    
-    print("🤖 Bot de Messenger iniciado...")
+
+if __name__ == "__main__":
+    if not os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN"):
+        print("⚠️  ERROR: FACEBOOK_PAGE_ACCESS_TOKEN not set")
+    if not os.getenv("VERIFY_TOKEN"):
+        print("⚠️  ERROR: VERIFY_TOKEN not set")
+
+    print(f"🤖  Bot de Messenger iniciado (DB_TYPE={DB_TYPE})")
     app.run(port=5000, debug=True)
