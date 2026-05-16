@@ -1,5 +1,6 @@
 import os
 import re
+from datetime import datetime
 
 from flask import Flask, request
 
@@ -9,10 +10,12 @@ from models.contact import Contact
 from services.messenger import MessengerService
 from services.notifications import NotificationService
 
+# ─── Cargar configuración ──────────────────────────────────────────────
 config.load_environment()
 
 DB_TYPE = os.getenv("DB_TYPE", "mongo")
 
+# ─── Inicializar repositorios según el motor de BD ─────────────────────
 if DB_TYPE == "mongo":
     db = config.get_database()
     from repositories.client_repository import MongoClientRepository
@@ -23,6 +26,7 @@ if DB_TYPE == "mongo":
     contact_repo = MongoContactRepository(db)
     user_repo = MongoUserRepository(db)
 
+    # Crear o actualizar el cliente por defecto desde las variables de entorno
     default_client = Client(
         client_id=os.getenv("CLIENT_ID", "default"),
         email=os.getenv("EMAIL"),
@@ -50,6 +54,7 @@ else:
 app = Flask(__name__)
 
 
+# ─── Utilidad: extraer número de teléfono del texto ───────────────────
 def extraer_numero_telefono(texto):
     texto = texto.strip()
 
@@ -75,6 +80,9 @@ def extraer_numero_telefono(texto):
     return None
 
 
+# ─── Endpoint: verificación del webhook (GET) ─────────────────────────
+# Facebook envía un GET con hub.mode, hub.verify_token y hub.challenge
+# para confirmar que el webhook es nuestro.
 @app.route("/webhook", methods=["GET"])
 def verificar_webhook():
     mode = request.args.get("hub.mode")
@@ -89,6 +97,8 @@ def verificar_webhook():
     return "Verification failed", 403
 
 
+# ─── Endpoint: recibir mensajes (POST) ────────────────────────────────
+# Aquí llegan los mensajes que los usuarios envían a la página de Facebook.
 @app.route("/webhook", methods=["POST"])
 def recibir_mensajes():
     data = request.get_json()
@@ -97,6 +107,7 @@ def recibir_mensajes():
         return "OK", 200
 
     for entry in data.get("entry", []):
+        # Identificar a qué cliente (página) pertenece el mensaje
         page_id = entry.get("id")
         client = client_repo.find_by_page_id(page_id)
 
@@ -104,6 +115,7 @@ def recibir_mensajes():
             print(f"[!] No client found for page_id: {page_id}")
             continue
 
+        # Inicializar servicios para este cliente
         messenger = MessengerService(
             client.facebook_config.get("page_access_token")
         )
@@ -124,6 +136,7 @@ def recibir_mensajes():
             sender_id = messaging_event.get("sender", {}).get("id")
             recipient_id = messaging_event.get("recipient", {}).get("id")
 
+            # Ignorar mensajes enviados por la propia página (el bot)
             if sender_id == recipient_id:
                 continue
 
@@ -131,28 +144,63 @@ def recibir_mensajes():
             if not message.get("text"):
                 continue
 
-            mensaje_texto = message["text"]
-            numero = extraer_numero_telefono(mensaje_texto)
+            texto_usuario = message["text"]
+            ahora = datetime.utcnow()
+
+            # ─── 1. Intentar extraer un número de teléfono ─────────
+            numero = extraer_numero_telefono(texto_usuario)
 
             if numero:
+
+                # ── Obtener perfil del usuario desde Facebook ──
+                profile = messenger.get_user_profile(sender_id)
+                nombre = profile.get("name") if profile else None
+
+                # ── Armar el registro de conversación ──
+                conversacion = [
+                    {
+                        "mensaje": texto_usuario,
+                        "fecha": ahora,
+                        "tipo": "entrante",
+                    }
+                ]
+
+                # ── Guardar o actualizar el contacto en la BD ──
                 contact = Contact(
                     client_id=client.client_id,
                     sender_id=sender_id,
                     numero_telefono=numero,
+                    nombre_usuario=nombre,
+                    fuente="messenger",
+                    estado="nuevo",
+                    notificado=False,
+                    conversacion=conversacion,
+                    etiquetas=[],
+                    metadata={"locale": "es_CO"},
                 )
                 contact_repo.save(contact)
+
+                # Marcar al usuario como respondido para no enviarle otro mensaje
                 user_repo.mark_responded(client.client_id, sender_id)
+
+                # Enviar alerta al administrador por Telegram
                 notifier.send_telegram_alert(numero, sender_id)
+
+                # Confirmar al usuario que recibimos su número
                 messenger.send_message(
                     sender_id,
                     f"✅ ¡Gracias! Hemos recibido tu número {numero}. "
                     f"En breve nos pondremos en contacto contigo.",
                 )
+
                 print(f"[+] Lead saved: {sender_id} - {numero}")
+
             else:
-                if not user_repo.is_responded(
-                    client.client_id, sender_id
-                ):
+                # ── No se encontró número en el mensaje ──
+
+                if not user_repo.is_responded(client.client_id, sender_id):
+
+                    # Primera interacción: pedir el número
                     messenger.send_message(
                         sender_id,
                         "¡Gracias por contactarnos! Por favor comparte "
@@ -160,7 +208,9 @@ def recibir_mensajes():
                     )
                     user_repo.mark_responded(client.client_id, sender_id)
                     print(f"[!] Asked for number from: {sender_id}")
+
                 else:
+                    # Ya se le pidió el número antes, ignorar silenciosamente
                     print(
                         f"[!] User {sender_id} already responded, ignoring"
                     )
@@ -168,6 +218,7 @@ def recibir_mensajes():
     return "OK", 200
 
 
+# ─── Punto de entrada ──────────────────────────────────────────────────
 if __name__ == "__main__":
     if not os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN"):
         print("⚠️  ERROR: FACEBOOK_PAGE_ACCESS_TOKEN not set")

@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import List, Optional
 
+from bson import ObjectId
+
 from models.contact import Contact
 
 
@@ -29,8 +31,36 @@ class MongoContactRepository(ContactRepository):
         self.collection = db["contacts"]
 
     def save(self, contact: Contact) -> str:
+        existing = self.collection.find_one(
+            {"client_id": contact.client_id, "sender_id": contact.sender_id}
+        )
+
+        if existing:
+            update = {"$set": {}, "$push": {}}
+            update["$set"]["numero_telefono"] = contact.numero_telefono
+            update["$set"]["nombre_usuario"] = contact.nombre_usuario
+            update["$set"]["estado"] = contact.estado
+            update["$set"]["notificado"] = contact.notificado
+            update["$set"]["fuente"] = contact.fuente
+            update["$set"]["etiquetas"] = contact.etiquetas or []
+            update["$set"]["metadata"] = contact.metadata or {}
+
+            if contact.conversacion:
+                update["$push"]["conversacion"] = {"$each": contact.conversacion}
+            else:
+                del update["$push"]
+
+            self.collection.update_one({"_id": existing["_id"]}, update)
+            return str(existing["_id"])
+
         doc = contact.__dict__.copy()
         doc.pop("_id", None)
+        if not doc.get("conversacion"):
+            doc.pop("conversacion", None)
+        if not doc.get("etiquetas"):
+            doc.pop("etiquetas", None)
+        if not doc.get("metadata"):
+            doc.pop("metadata", None)
         result = self.collection.insert_one(doc)
         return str(result.inserted_id)
 
