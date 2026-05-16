@@ -19,9 +19,27 @@ class ContactRepository(ABC):
         ...
 
     @abstractmethod
+    def find_by_id(self, contact_id: str) -> Optional[Contact]:
+        ...
+
+    @abstractmethod
+    def find_all(
+        self, client_id: Optional[str] = None, limit: int = 50
+    ) -> List[Contact]:
+        ...
+
+    @abstractmethod
     def list_by_client(
         self, client_id: str, limit: int = 50
     ) -> List[Contact]:
+        ...
+
+    @abstractmethod
+    def update(self, contact_id: str, data: dict) -> bool:
+        ...
+
+    @abstractmethod
+    def delete(self, contact_id: str) -> bool:
         ...
 
 
@@ -34,7 +52,6 @@ class MongoContactRepository(ContactRepository):
         existing = self.collection.find_one(
             {"client_id": contact.client_id, "sender_id": contact.sender_id}
         )
-
         if existing:
             update = {"$set": {}, "$push": {}}
             update["$set"]["numero_telefono"] = contact.numero_telefono
@@ -44,12 +61,10 @@ class MongoContactRepository(ContactRepository):
             update["$set"]["fuente"] = contact.fuente
             update["$set"]["etiquetas"] = contact.etiquetas or []
             update["$set"]["metadata"] = contact.metadata or {}
-
             if contact.conversacion:
                 update["$push"]["conversacion"] = {"$each": contact.conversacion}
             else:
                 del update["$push"]
-
             self.collection.update_one({"_id": existing["_id"]}, update)
             return str(existing["_id"])
 
@@ -72,12 +87,34 @@ class MongoContactRepository(ContactRepository):
         )
         return Contact(**doc) if doc else None
 
-    def list_by_client(
-        self, client_id: str, limit: int = 50
+    def find_by_id(self, contact_id: str) -> Optional[Contact]:
+        doc = self.collection.find_one({"_id": ObjectId(contact_id)})
+        return Contact(**doc) if doc else None
+
+    def find_all(
+        self, client_id: Optional[str] = None, limit: int = 50
     ) -> List[Contact]:
+        filtro = {}
+        if client_id:
+            filtro["client_id"] = client_id
         docs = (
-            self.collection.find({"client_id": client_id})
+            self.collection.find(filtro)
             .sort("fecha_captura", -1)
             .limit(limit)
         )
         return [Contact(**d) for d in docs]
+
+    def list_by_client(
+        self, client_id: str, limit: int = 50
+    ) -> List[Contact]:
+        return self.find_all(client_id=client_id, limit=limit)
+
+    def update(self, contact_id: str, data: dict) -> bool:
+        result = self.collection.update_one(
+            {"_id": ObjectId(contact_id)}, {"$set": data}
+        )
+        return result.matched_count > 0
+
+    def delete(self, contact_id: str) -> bool:
+        result = self.collection.delete_one({"_id": ObjectId(contact_id)})
+        return result.deleted_count > 0

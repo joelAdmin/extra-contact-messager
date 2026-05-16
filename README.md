@@ -6,8 +6,10 @@ Bot multi-tenant con Flask + MongoDB que captura leads desde Facebook Messenger,
 
 ```
 backend/
-├── app.py                         # Rutas Flask + orquestación
+├── app.py                         # Punto de entrada, registro de blueprints
 ├── config.py                      # Conexión MongoDB + carga .env
+├── auth.py                        # Decorador @token_required + JWT
+├── utils.py                       # Serialización + extraer_numero_telefono
 ├── setup_client.py                # Script para registrar clientes en BD
 ├── models/
 │   ├── client.py                  # Dataclass Client
@@ -16,10 +18,15 @@ backend/
 │   ├── client_repository.py       # CRUD de clientes
 │   ├── contact_repository.py      # CRUD de contactos
 │   └── user_repository.py         # Estado de usuarios respondidos
+├── routes/
+│   ├── webhook.py                 # GET + POST /webhook
+│   ├── auth.py                    # POST /api/auth/login
+│   ├── clients.py                 # CRUD /api/clients
+│   └── contacts.py                # GET /api/contacts
 ├── services/
 │   ├── messenger.py               # API Facebook Messenger
 │   └── notifications.py           # Alertas Telegram
-├── .env                           # Solo MONGODB_URI + DB_TYPE
+├── .env                           # MONGODB_URI + JWT_SECRET_KEY + API_KEY
 └── requirements.txt
 ```
 
@@ -75,6 +82,85 @@ ClientRepository.find_by_page_id(page_id)
               └─ Fin del mensaje
 ```
 
+## API REST (administración)
+
+Rutas protegidas con JWT para gestionar clientes y consultar contactos desde una SPA.
+
+### Autenticación
+
+```
+POST /api/auth/login
+Content-Type: application/json
+
+{"api_key": "tu_api_key"}
+```
+
+Respuesta:
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIs...",
+  "type": "Bearer",
+  "expires_in": "24h"
+}
+```
+
+El token se envía en el header `Authorization: Bearer <token>` en las rutas protegidas.
+
+### Clientes
+
+| Método | Ruta | Auth | Descripción |
+|---|---|---|---|
+| `GET` | `/api/clients?limit=N` | ✅ JWT | Listar clientes |
+| `GET` | `/api/clients/<client_id>` | ✅ JWT | Obtener un cliente |
+| `POST` | `/api/clients` | ✅ JWT | Crear cliente |
+| `PUT` | `/api/clients/<client_id>` | ✅ JWT | Actualizar cliente |
+| `DELETE` | `/api/clients/<client_id>` | ✅ JWT | Eliminar cliente |
+| `GET` | `/api/clients/<client_id>/stats` | ✅ JWT | Estadísticas del cliente |
+
+**POST /api/clients (crear):**
+```json
+{
+  "client_id": "nuevo_cliente",
+  "nombre_empresa": "Mi Empresa",
+  "plan": "free",
+  "facebook_config": {
+    "page_id": "123456789",
+    "page_access_token": "EAAToken...",
+    "verify_token": "mi_token"
+  },
+  "notificaciones": {
+    "telegram": {
+      "bot_token": "123:ABC",
+      "chat_id": "456",
+      "activo": true
+    }
+  }
+}
+```
+
+### Contactos
+
+| Método | Ruta | Auth | Descripción |
+|---|---|---|---|
+| `GET` | `/api/contacts?client_id=X&limit=N` | ✅ JWT | Listar contactos (filtro por cliente) |
+| `GET` | `/api/contacts/<id>` | ✅ JWT | Obtener un contacto |
+| `PUT` | `/api/contacts/<id>` | ✅ JWT | Actualizar estado/etiquetas |
+| `DELETE` | `/api/contacts/<id>` | ✅ JWT | Eliminar contacto |
+
+### Formatos de respuesta
+
+Todas las rutas devuelven:
+```json
+// Listado
+{ "data": [...], "total": 1 }
+
+// Individual
+{ "data": { ... } }
+
+// Error
+{ "error": "mensaje" }
+```
+
 ## Colecciones MongoDB
 
 ### `clients` — Clientes (multi-tenant)
@@ -120,6 +206,8 @@ Crear `.env` en la raíz del proyecto:
 DB_TYPE=mongo
 MONGODB_URI=mongodb+srv://<user>:<password>@cluster.mongodb.net/
 MONGODB_DB_NAME=plataforma_bots
+JWT_SECRET_KEY=tu_secreto_jwt_aqui
+API_KEY=tu_api_key_aqui
 ```
 
 Las credenciales de Facebook y Telegram **no van en .env**. Se almacenan directamente en MongoDB mediante:
@@ -216,6 +304,7 @@ sudo journalctl -u bot-facebook.service -n 100
 - python-dotenv
 - pymongo[srv]
 - dnspython
+- PyJWT
 
 ## DB_TYPE
 

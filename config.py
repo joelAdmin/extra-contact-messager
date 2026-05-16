@@ -11,9 +11,11 @@ def load_environment():
     load_dotenv()
     db_type = os.getenv("DB_TYPE", "mongo")
     if db_type == "mongo" and not os.getenv("MONGODB_URI"):
-        raise ValueError(
-            "MONGODB_URI is required when DB_TYPE=mongo"
-        )
+        raise ValueError("MONGODB_URI is required when DB_TYPE=mongo")
+    if not os.getenv("JWT_SECRET_KEY"):
+        raise ValueError("JWT_SECRET_KEY is required")
+    if not os.getenv("API_KEY"):
+        raise ValueError("API_KEY is required")
 
 
 def get_database():
