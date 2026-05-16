@@ -9,14 +9,10 @@ _db = None
 
 def load_environment():
     load_dotenv()
-    required = ["FACEBOOK_PAGE_ACCESS_TOKEN", "VERIFY_TOKEN"]
     db_type = os.getenv("DB_TYPE", "mongo")
-    if db_type == "mongo":
-        required.append("MONGODB_URI")
-    missing = [v for v in required if not os.getenv(v)]
-    if missing:
+    if db_type == "mongo" and not os.getenv("MONGODB_URI"):
         raise ValueError(
-            f"Missing required environment variables: {', '.join(missing)}"
+            "MONGODB_URI is required when DB_TYPE=mongo"
         )
 
 

@@ -5,12 +5,11 @@ from datetime import datetime
 from flask import Flask, request
 
 import config
-from models.client import Client
 from models.contact import Contact
 from services.messenger import MessengerService
 from services.notifications import NotificationService
 
-# ─── Cargar configuración ──────────────────────────────────────────────
+# ─── Cargar configuración del sistema ─────────────────────────────────
 config.load_environment()
 
 DB_TYPE = os.getenv("DB_TYPE", "mongo")
@@ -25,29 +24,6 @@ if DB_TYPE == "mongo":
     client_repo = MongoClientRepository(db)
     contact_repo = MongoContactRepository(db)
     user_repo = MongoUserRepository(db)
-
-    # Crear o actualizar el cliente por defecto desde las variables de entorno
-    default_client = Client(
-        client_id=os.getenv("CLIENT_ID", "default"),
-        email=os.getenv("EMAIL"),
-        facebook_config={
-            "page_access_token": os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN"),
-            "verify_token": os.getenv("VERIFY_TOKEN"),
-            "page_id": os.getenv("PAGE_ID", ""),
-            "phone_number_id": os.getenv("PHONE_NUMBER_ID", ""),
-        },
-        telegram_config=(
-            {
-                "bot_token": os.getenv("TELEGRAM_BOT_TOKEN"),
-                "chat_id": os.getenv("MI_ID_TELEGRAM"),
-            }
-            if os.getenv("TELEGRAM_BOT_TOKEN")
-            else None
-        ),
-        activo=True,
-        plan=os.getenv("PLAN", "free"),
-    )
-    client_repo.upsert(default_client)
 else:
     raise ValueError(f"Unsupported DB_TYPE: {DB_TYPE}. Available: mongo")
 
@@ -81,8 +57,6 @@ def extraer_numero_telefono(texto):
 
 
 # ─── Endpoint: verificación del webhook (GET) ─────────────────────────
-# Facebook envía un GET con hub.mode, hub.verify_token y hub.challenge
-# para confirmar que el webhook es nuestro.
 @app.route("/webhook", methods=["GET"])
 def verificar_webhook():
     mode = request.args.get("hub.mode")
@@ -91,6 +65,16 @@ def verificar_webhook():
 
     client = client_repo.find_by_verify_token(token)
     if client and mode == "subscribe":
+        # Marcar webhook como verificado
+        fb = client.facebook_config
+        if not fb.get("webhook_verified"):
+            db.clients.update_one(
+                {"client_id": client.client_id},
+                {"$set": {
+                    "facebook_config.webhook_verified": True,
+                    "facebook_config.ultima_verificacion": datetime.utcnow(),
+                }}
+            )
         print(f"[✓] Webhook verified for client {client.client_id}")
         return challenge, 200
 
@@ -98,7 +82,6 @@ def verificar_webhook():
 
 
 # ─── Endpoint: recibir mensajes (POST) ────────────────────────────────
-# Aquí llegan los mensajes que los usuarios envían a la página de Facebook.
 @app.route("/webhook", methods=["POST"])
 def recibir_mensajes():
     data = request.get_json()
@@ -107,7 +90,6 @@ def recibir_mensajes():
         return "OK", 200
 
     for entry in data.get("entry", []):
-        # Identificar a qué cliente (página) pertenece el mensaje
         page_id = entry.get("id")
         client = client_repo.find_by_page_id(page_id)
 
@@ -115,19 +97,22 @@ def recibir_mensajes():
             print(f"[!] No client found for page_id: {page_id}")
             continue
 
-        # Inicializar servicios para este cliente
-        messenger = MessengerService(
-            client.facebook_config.get("page_access_token")
-        )
+        # ── Obtener configuración del cliente ──
+        fb_config = client.facebook_config
+        notif_config = client.notificaciones
+        bot_msgs = client.bot_config
+
+        # Inicializar servicios
+        messenger = MessengerService(fb_config["page_access_token"])
         notifier = NotificationService(
             telegram_bot_token=(
-                client.telegram_config.get("bot_token")
-                if client.telegram_config
+                notif_config["telegram"]["bot_token"]
+                if notif_config.get("telegram", {}).get("activo")
                 else None
             ),
             telegram_chat_id=(
-                client.telegram_config.get("chat_id")
-                if client.telegram_config
+                notif_config["telegram"]["chat_id"]
+                if notif_config.get("telegram", {}).get("activo")
                 else None
             ),
         )
@@ -136,7 +121,7 @@ def recibir_mensajes():
             sender_id = messaging_event.get("sender", {}).get("id")
             recipient_id = messaging_event.get("recipient", {}).get("id")
 
-            # Ignorar mensajes enviados por la propia página (el bot)
+            # Ignorar mensajes enviados por la propia página
             if sender_id == recipient_id:
                 continue
 
@@ -180,17 +165,33 @@ def recibir_mensajes():
                 )
                 contact_repo.save(contact)
 
-                # Marcar al usuario como respondido para no enviarle otro mensaje
+                # Marcar como respondido
                 user_repo.mark_responded(client.client_id, sender_id)
 
-                # Enviar alerta al administrador por Telegram
+                # Enviar alerta al administrador
                 notifier.send_telegram_alert(numero, sender_id)
 
-                # Confirmar al usuario que recibimos su número
-                messenger.send_message(
-                    sender_id,
-                    f"✅ ¡Gracias! Hemos recibido tu número {numero}. "
-                    f"En breve nos pondremos en contacto contigo.",
+                # Confirmar al usuario con el mensaje configurado
+                msg_confirmacion = bot_msgs.get(
+                    "mensaje_confirmacion",
+                    f"✅ ¡Excelente! Hemos recibido tu número {numero}. "
+                    f"En breve un asesor te contactará.",
+                )
+                messenger.send_message(sender_id, msg_confirmacion)
+
+                # Actualizar estadísticas del cliente
+                db.clients.update_one(
+                    {"client_id": client.client_id},
+                    {
+                        "$inc": {
+                            "estadisticas.total_contactos": 1,
+                            "estadisticas.contactos_mes_actual": 1,
+                        },
+                        "$set": {
+                            "estadisticas.ultimo_contacto": ahora,
+                            "estadisticas.fecha_actualizacion": ahora,
+                        },
+                    }
                 )
 
                 print(f"[+] Lead saved: {sender_id} - {numero}")
@@ -200,17 +201,17 @@ def recibir_mensajes():
 
                 if not user_repo.is_responded(client.client_id, sender_id):
 
-                    # Primera interacción: pedir el número
-                    messenger.send_message(
-                        sender_id,
+                    # Usar mensaje de bienvenida configurado
+                    msg_bienvenida = bot_msgs.get(
+                        "mensaje_bienvenida",
                         "¡Gracias por contactarnos! Por favor comparte "
                         "tu número telefónico para poder ayudarte mejor.",
                     )
+                    messenger.send_message(sender_id, msg_bienvenida)
                     user_repo.mark_responded(client.client_id, sender_id)
                     print(f"[!] Asked for number from: {sender_id}")
 
                 else:
-                    # Ya se le pidió el número antes, ignorar silenciosamente
                     print(
                         f"[!] User {sender_id} already responded, ignoring"
                     )
@@ -220,10 +221,5 @@ def recibir_mensajes():
 
 # ─── Punto de entrada ──────────────────────────────────────────────────
 if __name__ == "__main__":
-    if not os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN"):
-        print("⚠️  ERROR: FACEBOOK_PAGE_ACCESS_TOKEN not set")
-    if not os.getenv("VERIFY_TOKEN"):
-        print("⚠️  ERROR: VERIFY_TOKEN not set")
-
     print(f"🤖  Bot de Messenger iniciado (DB_TYPE={DB_TYPE})")
     app.run(port=5000, debug=True)
